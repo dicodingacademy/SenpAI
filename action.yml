@@ -1,5 +1,5 @@
 name: "SenpAI - Senior Programmer AI"
-description: "Automatically reviews pull requests using Google's Gemini AI model, providing insightful feedback and suggestions to improve code quality."
+description: "Auto-reviews pull requests with Google's Gemini AI, offering insightful feedback and suggestions to enhance code quality."
 author: 'furqoncreative'
 
 inputs:
