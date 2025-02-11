@@ -1,0 +1,25 @@
+{
+  "name": "senpai",
+  "version": "1.0.0",
+  "main": "src/index.js",
+  "scripts": {
+    "build": "ncc build src/index.js -o dist",
+    "reformat": "npx eslint --fix",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "furqoncreative",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@actions/core": "^1.10.1",
+    "@actions/github": "^6.0.0",
+    "@google/generative-ai": "^0.21.0",
+    "minimatch": "^9.0.3"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.38.3",
+    "eslint": "^9.20.0",
+    "eslint-config-dicodingacademy": "^0.9.4"
+  }
+}
