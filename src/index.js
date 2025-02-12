@@ -1,9 +1,9 @@
 const core = require('@actions/core');
 const { minimatch } = require('minimatch');
-const { getConfig } = require('lib/config');
-const GithubClient = require('lib/github-client');
-const GeminiClient = require('lib/gemini-client');
-const { parseGitDiff } = require('lib/diff-parser');
+const { getConfig } = require('./lib/config');
+const GithubClient = require('./lib/github-client');
+const GeminiClient = require('./lib/gemini-client');
+const { parseGitDiff } = require('./lib/diff-parser');
 
 async function run() {
   try {
