@@ -9,14 +9,15 @@ function parseGitDiff(diffText) {
       if (currentFile) files.push(currentFile);
       const paths = line.split(' ').slice(2);
       currentFile = {
-        path: paths[1].substring(2),
+        path: paths[1]?.substring(2) || 'unknown_file',
         chunks: []
       };
     } else if (line.startsWith('@@')) {
-      const match = line.match(/\+(\d+),?(\d*)/);
+      const match = line.match(/\+(\d+)(,(\d+))?/);
       if (match) {
         currentChunk = {
           newStart: parseInt(match[1]),
+          newLines: match[3] ? parseInt(match[3]) : 1,
           content: []
         };
         currentFile?.chunks.push(currentChunk);
