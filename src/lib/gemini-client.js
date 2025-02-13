@@ -99,27 +99,32 @@ class GeminiClient {
               lineNumber < 1 ||
               lineNumber > hunk.newLines
         ) {
-          core.warning(
-            `Invalid line ${line} in ${filePath}. ` + `Valid range 1-${hunk.newLines}`
-          );
+          core.warning(`Invalid line ${line} in ${filePath}. Valid range 1-${hunk.newLines}`);
+          return null;
+        }
+
+        const change = hunk.changes.find((c) => c.newLineNumber === (hunk.newStart + lineNumber - 1));
+
+        if (!change) {
+          core.warning(`Could not find position for line ${lineNumber} in ${filePath}`);
           return null;
         }
 
         return {
           path: filePath,
-          line: hunk.newStart + lineNumber - 1,
+          position: change.position,
           body: comment
         };
       })
       .filter((comment) => comment !== null);
   }
 
-  buildPrompt(fileName, pr, diffContent, languageReview = 'english', toneResponse = 'professional', chunkLines) {
-    if (!fileName || !diffContent || !chunkLines) {
+  buildPrompt(fileName, pr, diffContent, languageReview = 'english', toneResponse = 'professional', hunkNewLines) {
+    if (!fileName || !diffContent || !hunkNewLines) {
       throw new Error('Required parameters missing: fileName, diffContent, and chunkLines are mandatory');
     }
 
-    if (!Number.isInteger(chunkLines) || chunkLines <= 0) {
+    if (!Number.isInteger(hunkNewLines) || hunkNewLines <= 0) {
       throw new Error('chunkLines must be a positive integer');
     }
 
@@ -135,7 +140,7 @@ class GeminiClient {
     {
       "comments": [
         {
-          "line": <1-${chunkLines}>,
+          "line": <1-${hunkNewLines}>,
           "comment": "<markdown>",
           "severity": "<critical|high|medium|low>"
         }
@@ -143,9 +148,13 @@ class GeminiClient {
     }
     
     RULES:
-    1. Language: ${languageReview}, Tone: ${toneResponse}
-    2. Line numbers REFERENCE NEW CODE ONLY
-    3. Priority order:
+    1. LANGUAGE: ${languageReview}, TONE: ${toneResponse}
+    2. RULES FOR LINE NUMBERS:
+        - Line numbers MUST be relative to the hunk start
+        - First line after @@ header is line 1
+        - Maximum line number is ${hunkNewLines}
+        - NEVER use absolute file line numbers
+    3. PRIORITY CRITERIA:
         ${priorityCriteria}
     4. REQUIRED IMPACT ANALYSIS:
       - Include concrete performance metrics
@@ -155,12 +164,24 @@ class GeminiClient {
       - Style nitpicks (unless security-related)
       - Documentation suggestions
       - Theoretical optimizations
+
+    EXAMPLE:
+    {
+      "comments": [
+        {
+          "line": 2,
+          "comment": "Potential SQL injection vulnerability. Use parameterized queries.",
+          "severity": "critical"
+        }
+      ]
+    }
     
-    CRITICAL CONTEXT:
+    DIFF CONTEXT:
     PR Title: ${pr.title || 'Untitled'}
-    ${pr.body ? `PR Desc: ${pr.body}` : ''}
+    ${pr.body ? `PR Description: ${pr.body}` : ''}
     
-    CODE DIFF (${fileName}):
+    FILE: ${fileName}
+    DIFF HUNK:
     \`\`\`diff
     ${diffContent}
     \`\`\`

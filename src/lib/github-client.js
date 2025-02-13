@@ -73,7 +73,9 @@ class GitHubClient {
   async submitReview(comments) {
     try {
       const validComments = comments.filter((c) =>
-        c.line > 0 && c.path && c.body?.length > 0
+        c.position > 0 &&
+          c.path &&
+          c.body?.length > 0
       );
 
       if (validComments.length > 0) {
@@ -96,7 +98,7 @@ class GitHubClient {
         core.info('Posted LGTM comment');
       }
     } catch (error) {
-      core.error(`Review submission failed: ${error.message}`);
+      core.error(`Review failed: ${error.message}`);
       if (error.errors) {
         error.errors.forEach((err) => core.error(JSON.stringify(err)));
       }
