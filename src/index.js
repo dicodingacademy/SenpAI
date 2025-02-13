@@ -21,12 +21,18 @@ async function run() {
     const rawDiff = await githubClient.getDiff();
     const parsedDiffFiles= parseGitDiff(rawDiff);
 
-    const filteredFiles = parsedDiffFiles.filter((file) =>
-      file.type !== 'delete' &&
-        !excludeFiles.some((pattern) =>
-          minimatch(file.newPath, pattern, { dot: true })
-        )
-    );
+    const filteredFiles = parsedDiffFiles.filter((file) => {
+      if (file.type === 'delete') {
+        return false;
+      }
+
+      return !excludeFiles.some((pattern) =>
+        minimatch(file.newPath, pattern, {
+          dot: true,
+          matchBase: true
+        })
+      );
+    });
 
     core.info(`Processing ${filteredFiles.length} files after exclusions`);
     const reviews = await geminiClient.reviewFiles(filteredFiles, prDetails);
