@@ -26,7 +26,7 @@ function parseComment(aiResponse) {
       return [];
     }
 
-    const validComments = result.comments.filter((comment) => {
+    return result.comments.filter((comment) => {
       if (!comment || typeof comment !== 'object') return false;
 
       const hasValidLine = typeof comment.line === 'number' && comment.line > 0;
@@ -37,9 +37,6 @@ function parseComment(aiResponse) {
 
       return hasValidLine && hasValidComment;
     });
-
-    core.info(`Found ${validComments.length} valid comments`);
-    return validComments;
 
   } catch (error) {
     core.error(`Failed to parse AI response: ${error.message}`);
