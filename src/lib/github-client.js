@@ -97,6 +97,9 @@ class GitHubClient {
       }
     } catch (error) {
       core.error(`Review submission failed: ${error.message}`);
+      if (error.errors) {
+        error.errors.forEach((err) => core.error(JSON.stringify(err)));
+      }
       throw error;
     }
   }
