@@ -31699,7 +31699,7 @@ function parseComment(aiResponse) {
       return [];
     }
 
-    const validComments = result.comments.filter((comment) => {
+    return result.comments.filter((comment) => {
       if (!comment || typeof comment !== 'object') return false;
 
       const hasValidLine = typeof comment.line === 'number' && comment.line > 0;
@@ -31710,9 +31710,6 @@ function parseComment(aiResponse) {
 
       return hasValidLine && hasValidComment;
     });
-
-    core.info(`Found ${validComments.length} valid comments`);
-    return validComments;
 
   } catch (error) {
     core.error(`Failed to parse AI response: ${error.message}`);
@@ -31761,14 +31758,15 @@ function parseGitDiff(diffText) {
       if (currentFile) files.push(currentFile);
       const paths = line.split(' ').slice(2);
       currentFile = {
-        path: paths[1].substring(2),
+        path: paths[1]?.substring(2) || 'unknown_file',
         chunks: []
       };
     } else if (line.startsWith('@@')) {
-      const match = line.match(/\+(\d+),?(\d*)/);
+      const match = line.match(/\+(\d+)(,(\d+))?/);
       if (match) {
         currentChunk = {
           newStart: parseInt(match[1]),
+          newLines: match[3] ? parseInt(match[3]) : 1,
           content: []
         };
         currentFile?.chunks.push(currentChunk);
@@ -31817,34 +31815,38 @@ class GeminiClient {
         core.error(`Failed to process ${file.path}: ${error}`);
       }
     }
-
     return review;
   }
 
   async generateFileComments(file, pr) {
+    const DELAY = 1000;
     const comments = [];
 
     for (const [index, chunk] of file.chunks.entries()) {
+      await new Promise((resolve) => setTimeout(resolve, DELAY));
+
       try {
         const diffContent = chunk.content.join('\n');
         const { toneResponse, languageReview } = getConfig();
-        const prompt = this.buildPrompt(file.path, pr, diffContent, languageReview, toneResponse);
+        const prompt = this.buildPrompt(
+          file.path,
+          pr,
+          diffContent,
+          languageReview,
+          toneResponse,
+          chunk.newLines
+        );
+
         const aiResponse = await this.model.generateContent(prompt);
         const parsedResponse = parseComment(aiResponse);
 
-        if (parsedResponse.length > 0) {
-          parsedResponse.forEach(({ line, comment }) => {
-            comments.push({
-              path: file.path,
-              line: chunk.newStart + line - 1,
-              body: comment
-            });
-          });
+        const chunkComments = this.createComments(
+          file.path,
+          chunk,
+          parsedResponse
+        );
 
-          core.info(`Found ${parsedResponse.length} issues in ${file.path}`);
-        } else {
-          core.info(`No issues found in ${file.path}`);
-        }
+        comments.push(...chunkComments);
 
         core.debug(`Processed chunk ${index + 1} in ${file.path}`);
       } catch (error) {
@@ -31855,12 +31857,34 @@ class GeminiClient {
     return comments;
   }
 
-  buildPrompt(fileName, pr, diffContent, languageReview, toneResponse) {
+  createComments(filePath, chunk, aiComments) {
+    return aiComments
+      .map(({ line, comment }) => {
+        const lineNumber = Number(line);
+        if (
+          Number.isNaN(lineNumber) ||
+              lineNumber < 1 ||
+              lineNumber > chunk.newLines
+        ) {
+          core.warning(`Invalid line ${line} in ${filePath}. Valid range 1-${chunk.newLines}`);
+          return null;
+        }
+
+        return {
+          path: filePath,
+          line: chunk.newStart + lineNumber - 1,
+          body: comment
+        };
+      })
+      .filter((comment) => comment !== null);
+  }
+
+  buildPrompt(fileName, pr, diffContent, languageReview, toneResponse, chunkLines) {
     return `You are SenpAI, a senior programmer AI. Analyze this code diff and provide feedback in STRICT JSON format:
             {
               "comments": [
                 {
-                  "line": <line_number>,
+                  "line":  <1-${chunkLines}>,
                   "comment": "<markdown_formatted_feedback>"
                 }
               ]
@@ -31868,13 +31892,14 @@ class GeminiClient {
             
             Rules:
             1. Response with ${languageReview || 'english'} with ${toneResponse} tone. 
-            2. Only include comments if there are actual issues to address
-            3. Focus on:
+            2. Provide comments and suggestions ONLY if there is something to improve, otherwise "comments" should be an empty array.
+            3. Line numbers MUST be between 1-${chunkLines}
+            4. Focus on:
                - Security vulnerabilities
                - Performance optimizations
                - Code quality issues
                - Architectural improvements
-            4. Avoid:
+            5. Avoid:
                - Style nitpicks
                - Comment suggestions
                - Unsubstantiated claims
@@ -31902,6 +31927,7 @@ module.exports = GeminiClient;
 /* eslint-disable camelcase */
 const { getOctokit, context } = __nccwpck_require__(3228);
 const core = __nccwpck_require__(7484);
+const { getConfig } = __nccwpck_require__(3035);
 
 class GitHubClient {
   constructor(token) {
@@ -31909,83 +31935,95 @@ class GitHubClient {
       throw new Error('GitHub token is required but not provided.');
     }
 
-    this.context = context;
     this.octokit = getOctokit(token);
-    this.core = core;
-    this.owner = context.repo.owner;
-    this.repo = context.repo.repo;
-    this.pullNumber = context.payload.pull_request?.number || null;
+    this.context = context;
+    this.repo = context.repo;
+    this.pullNumber = context.payload.pull_request?.number;
+    this.triggerCommand = getConfig().triggerCommand;
   }
 
-  validatePullRequest(triggerCommand) {
+  validatePullRequest() {
     if (this.context.eventName === 'issue_comment') {
-      if (!this.context.payload.issue.pull_request) {
-        this.core.info('Not a pull request comment, skipping');
+      const comment = this.context.payload.comment;
+
+      if (!this.context.payload.issue?.pull_request) {
+        core.info('Comment is not on a pull request');
         return false;
       }
 
-      if (!this.context.payload.comment.body.includes(triggerCommand)) {
-        this.core.info('No trigger command found, skipping');
+      if (!comment.body.includes(this.triggerCommand)) {
+        core.info(`Comment does not contain trigger command: ${this.triggerCommand}`);
         return false;
       }
+
+      this.pullNumber = this.context.payload.issue.number;
     }
+
+    if (!this.pullNumber) {
+      core.error('No pull request number found');
+      return false;
+    }
+
     return true;
   }
 
   async getPullRequestDetails() {
     if (!this.validatePullRequest()) {
-      return null;
-    }
-
-    if (!this.pullNumber) {
-      core.setFailed('No pull request found in context');
+      core.info('Pull request validation failed');
       return null;
     }
 
     try {
       const { data: pr } = await this.octokit.rest.pulls.get({
-        owner: this.owner,
-        repo: this.repo,
+        owner: this.repo.owner,
+        repo: this.repo.repo,
         pull_number: this.pullNumber,
       });
-
       return pr;
     } catch (error) {
-      this.core.error(`Failed to fetch PR details: ${error.message}`);
+      core.error(`Failed to fetch PR: ${error.message}`);
       return null;
     }
   }
 
   async getDiff() {
     const { data: rawDiff } = await this.octokit.rest.pulls.get({
-      owner: this.owner,
-      repo: this.repo,
+      owner: this.repo.owner,
+      repo: this.repo.repo,
       pull_number: this.pullNumber,
       mediaType: { format: 'diff' },
     });
-
     return rawDiff;
   }
 
   async submitReview(comments) {
-    if (comments.length > 0) {
-      await this.octokit.rest.pulls.createReview({
-        owner: this.owner,
-        repo: this.repo,
-        pull_number: this.pullNumber,
-        event: 'COMMENT',
-        comments,
-        body: 'Here are Code Reviews by _SenpAI_'
-      });
-      core.info(`Submitted ${comments.length} review comments`);
-    } else {
-      await this.octokit.rest.issues.createComment({
-        owner: this.owner,
-        repo: this.repo,
-        issue_number: this.pullNumber,
-        body: '✅ **LGTM!** No issues found by SenpAI\n\n_Code meets quality standards_'
-      });
-      core.info('Posted LGTM comment');
+    try {
+      const validComments = comments.filter((c) =>
+        c.line > 0 && c.path && c.body?.length > 0
+      );
+
+      if (validComments.length > 0) {
+        await this.octokit.rest.pulls.createReview({
+          owner: this.repo.owner,
+          repo: this.repo.repo,
+          pull_number: this.pullNumber,
+          event: 'COMMENT',
+          comments: validComments,
+          body: '🧠 Here are Code Reviews by _SenpAI_:'
+        });
+        core.info(`Submitted ${validComments.length} valid comments`);
+      } else {
+        await this.octokit.rest.issues.createComment({
+          owner: this.repo.owner,
+          repo: this.repo.repo,
+          issue_number: this.pullNumber,
+          body: '✅ **LGTM!** No issues found\n\n_Code meets quality standards_'
+        });
+        core.info('Posted LGTM comment');
+      }
+    } catch (error) {
+      core.error(`Review submission failed: ${error.message}`);
+      throw error;
     }
   }
 }
@@ -35791,7 +35829,6 @@ async function run() {
     }
 
     const rawDiff = await githubClient.getDiff();
-
     const parsedDiffFiles = parseGitDiff(rawDiff);
     const filteredFiles = parsedDiffFiles.filter((file) =>
       !excludeFiles.some((pattern) => minimatch(file.path, pattern))
