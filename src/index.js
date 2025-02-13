@@ -19,9 +19,13 @@ async function run() {
     }
 
     const rawDiff = await githubClient.getDiff();
-    const parsedDiffFiles = parseGitDiff(rawDiff);
+    const parsedDiffFiles= parseGitDiff(rawDiff);
+
     const filteredFiles = parsedDiffFiles.filter((file) =>
-      !excludeFiles.some((pattern) => minimatch(file.path, pattern))
+      file.type !== 'delete' &&
+        !excludeFiles.some((pattern) =>
+          minimatch(file.newPath, pattern, { dot: true })
+        )
     );
 
     core.info(`Processing ${filteredFiles.length} files after exclusions`);

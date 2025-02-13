@@ -18,12 +18,12 @@ class GeminiClient {
   async reviewFiles(filteredFiles, prDetails) {
     const review = [];
     for (const file of filteredFiles) {
-      core.info(`Analyzing ${file.path}`);
+      core.info(`Analyzing ${file.newPath}`);
       try {
         const fileComments = await this.generateFileComments(file, prDetails);
         review.push(...fileComments);
       } catch (error) {
-        core.error(`Failed to process ${file.path}: ${error}`);
+        core.error(`Failed to process ${file.newPath}: ${error}`);
       }
     }
     return review;
@@ -33,98 +33,139 @@ class GeminiClient {
     const DELAY = 1000;
     const comments = [];
 
-    for (const [index, chunk] of file.chunks.entries()) {
+    for (const hunk of file.hunks) {
       await new Promise((resolve) => setTimeout(resolve, DELAY));
 
       try {
-        const diffContent = chunk.content.join('\n');
+        const diffContent = hunk.changes.map((c) => c.content).join('\n');
         const { toneResponse, languageReview } = getConfig();
         const prompt = this.buildPrompt(
-          file.path,
+          file.newPath,
           pr,
           diffContent,
           languageReview,
           toneResponse,
-          chunk.newLines
+          hunk.newLines
         );
 
         const aiResponse = await this.model.generateContent(prompt);
         const parsedResponse = parseComment(aiResponse);
 
-        const chunkComments = this.createComments(
-          file.path,
-          chunk,
+        const hunkComments = this.createComments(
+          file.newPath,
+          hunk,
           parsedResponse
         );
 
-        comments.push(...chunkComments);
+        comments.push(...hunkComments);
 
-        core.debug(`Processed chunk ${index + 1} in ${file.path}`);
+        core.debug(`Processed hunk in ${file.newPath} (lines ${hunk.newStart}-${hunk.newStart + hunk.newLines - 1})`);
       } catch (error) {
-        core.error(`Error processing chunk ${index + 1} in ${file.path}: ${error}`);
+        core.error(`Error processing hunk in ${file.newPath}: ${error}`);
       }
     }
-
     return comments;
   }
 
-  createComments(filePath, chunk, aiComments) {
+  createComments(filePath, hunk, aiComments) {
+    const MAX_COMMENTS_PER_HUNK = 3;
+
     return aiComments
+      .filter((comment) => {
+        if (!comment.severity) {
+          core.debug(`Comment missing severity: ${JSON.stringify(comment)}`);
+          return false;
+        }
+
+        const validSeverities = new Set(['critical', 'high', 'medium']);
+        const isSevere = validSeverities.has(comment.severity.toLowerCase());
+
+        if (!isSevere) {
+          core.debug(`Filtered out low-severity comment: ${comment.severity}`);
+        }
+
+        return isSevere;
+      })
+      .sort((a, b) => {
+        const severityOrder = { critical: 1, high: 2, medium: 3 };
+        return severityOrder[a.severity.toLowerCase()] - severityOrder[b.severity.toLowerCase()];
+      })
+      .slice(0, MAX_COMMENTS_PER_HUNK)
       .map(({ line, comment }) => {
         const lineNumber = Number(line);
+
         if (
           Number.isNaN(lineNumber) ||
               lineNumber < 1 ||
-              lineNumber > chunk.newLines
+              lineNumber > hunk.newLines
         ) {
-          core.warning(`Invalid line ${line} in ${filePath}. Valid range 1-${chunk.newLines}`);
+          core.warning(
+            `Invalid line ${line} in ${filePath}. ` + `Valid range 1-${hunk.newLines}`
+          );
           return null;
         }
 
         return {
           path: filePath,
-          line: chunk.newStart + lineNumber - 1,
+          line: hunk.newStart + lineNumber - 1,
           body: comment
         };
       })
       .filter((comment) => comment !== null);
   }
 
-  buildPrompt(fileName, pr, diffContent, languageReview, toneResponse, chunkLines) {
-    return `You are SenpAI, a senior programmer AI. Analyze this code diff and provide feedback in STRICT JSON format:
-            {
-              "comments": [
-                {
-                  "line":  <1-${chunkLines}>,
-                  "comment": "<markdown_formatted_feedback>"
-                }
-              ]
-            }
-            
-            Rules:
-            1. Response with ${languageReview || 'english'} with ${toneResponse} tone. 
-            2. Provide comments and suggestions ONLY if there is something to improve, otherwise "comments" should be an empty array.
-            3. Line numbers MUST be between 1-${chunkLines}
-            4. Focus on:
-               - Security vulnerabilities
-               - Performance optimizations
-               - Code quality issues
-               - Architectural improvements
-            5. Avoid:
-               - Style nitpicks
-               - Comment suggestions
-               - Unsubstantiated claims
-            
-            PR Title: ${pr.title}
-            PR Description: ${pr.body || 'No description provided'}
-            
-            File: ${fileName}
-            Diff:
-            \`\`\`diff
-            ${diffContent}
-            \`\`\`
-            
-            ONLY respond with valid JSON. No extra text.`;
+  buildPrompt(fileName, pr, diffContent, languageReview = 'english', toneResponse = 'professional', chunkLines) {
+    if (!fileName || !diffContent || !chunkLines) {
+      throw new Error('Required parameters missing: fileName, diffContent, and chunkLines are mandatory');
+    }
+
+    if (!Number.isInteger(chunkLines) || chunkLines <= 0) {
+      throw new Error('chunkLines must be a positive integer');
+    }
+
+    const priorityCriteria = [
+      '1. Security risks (immediate danger)',
+      '2. Critical bugs (data loss/corruption)',
+      '3. Performance bottlenecks (>100ms impact)',
+      '4. Maintenance hazards (error handling)',
+      '5. Architectural flaws (scalability)'
+    ].join('\n    ');
+
+    return `You are SenpAI, a senior code reviewer. Provide MAX 3 URGENT comments in STRICT JSON:
+    {
+      "comments": [
+        {
+          "line": <1-${chunkLines}>,
+          "comment": "<markdown>",
+          "severity": "<critical|high|medium|low>"
+        }
+      ]
+    }
+    
+    RULES:
+    1. Language: ${languageReview}, Tone: ${toneResponse}
+    2. Line numbers REFERENCE NEW CODE ONLY
+    3. Priority order:
+        ${priorityCriteria}
+    4. REQUIRED IMPACT ANALYSIS:
+      - Include concrete performance metrics
+      - Specify security exploit scenarios
+      - Quantify maintenance costs
+    5. AVOID:
+      - Style nitpicks (unless security-related)
+      - Documentation suggestions
+      - Theoretical optimizations
+    
+    CRITICAL CONTEXT:
+    PR Title: ${pr.title || 'Untitled'}
+    ${pr.body ? `PR Desc: ${pr.body}` : ''}
+    
+    CODE DIFF (${fileName}):
+    \`\`\`diff
+    ${diffContent}
+    \`\`\`
+    
+    Respond ONLY with valid JSON.`;
   }
 }
 
