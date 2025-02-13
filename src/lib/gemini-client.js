@@ -68,15 +68,40 @@ class GeminiClient {
   }
 
   createComments(filePath, hunk, aiComments) {
+    const MAX_COMMENTS_PER_HUNK = 3;
+
     return aiComments
+      .filter((comment) => {
+        if (!comment.severity) {
+          core.debug(`Comment missing severity: ${JSON.stringify(comment)}`);
+          return false;
+        }
+
+        const validSeverities = new Set(['critical', 'high', 'medium']);
+        const isSevere = validSeverities.has(comment.severity.toLowerCase());
+
+        if (!isSevere) {
+          core.debug(`Filtered out low-severity comment: ${comment.severity}`);
+        }
+
+        return isSevere;
+      })
+      .sort((a, b) => {
+        const severityOrder = { critical: 1, high: 2, medium: 3 };
+        return severityOrder[a.severity.toLowerCase()] - severityOrder[b.severity.toLowerCase()];
+      })
+      .slice(0, MAX_COMMENTS_PER_HUNK)
       .map(({ line, comment }) => {
         const lineNumber = Number(line);
+
         if (
           Number.isNaN(lineNumber) ||
               lineNumber < 1 ||
               lineNumber > hunk.newLines
         ) {
-          core.warning(`Invalid line ${line} in ${filePath}. Valid range 1-${hunk.newLines}`);
+          core.warning(
+            `Invalid line ${line} in ${filePath}. ` + `Valid range 1-${hunk.newLines}`
+          );
           return null;
         }
 
@@ -112,7 +137,7 @@ class GeminiClient {
         {
           "line": <1-${chunkLines}>,
           "comment": "<markdown>",
-          "severity": "<critical|high|medium>"
+          "severity": "<critical|high|medium|low>"
         }
       ]
     }
