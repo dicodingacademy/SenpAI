@@ -1,6 +1,7 @@
 /* eslint-disable camelcase */
 const { getOctokit, context } = require('@actions/github');
 const core = require('@actions/core');
+const { getConfig } = require('./config');
 
 class GitHubClient {
   constructor(token) {
@@ -8,83 +9,95 @@ class GitHubClient {
       throw new Error('GitHub token is required but not provided.');
     }
 
-    this.context = context;
     this.octokit = getOctokit(token);
-    this.core = core;
-    this.owner = context.repo.owner;
-    this.repo = context.repo.repo;
-    this.pullNumber = context.payload.pull_request?.number || null;
+    this.context = context;
+    this.repo = context.repo;
+    this.pullNumber = context.payload.pull_request?.number;
+    this.triggerCommand = getConfig().triggerCommand;
   }
 
-  validatePullRequest(triggerCommand) {
+  validatePullRequest() {
     if (this.context.eventName === 'issue_comment') {
-      if (!this.context.payload.issue.pull_request) {
-        this.core.info('Not a pull request comment, skipping');
+      const comment = this.context.payload.comment;
+
+      if (!this.context.payload.issue?.pull_request) {
+        core.info('Comment is not on a pull request');
         return false;
       }
 
-      if (!this.context.payload.comment.body.includes(triggerCommand)) {
-        this.core.info('No trigger command found, skipping');
+      if (!comment.body.includes(this.triggerCommand)) {
+        core.info(`Comment does not contain trigger command: ${this.triggerCommand}`);
         return false;
       }
+
+      this.pullNumber = this.context.payload.issue.number;
     }
+
+    if (!this.pullNumber) {
+      core.error('No pull request number found');
+      return false;
+    }
+
     return true;
   }
 
   async getPullRequestDetails() {
     if (!this.validatePullRequest()) {
-      return null;
-    }
-
-    if (!this.pullNumber) {
-      core.setFailed('No pull request found in context');
+      core.info('Pull request validation failed');
       return null;
     }
 
     try {
       const { data: pr } = await this.octokit.rest.pulls.get({
-        owner: this.owner,
-        repo: this.repo,
+        owner: this.repo.owner,
+        repo: this.repo.repo,
         pull_number: this.pullNumber,
       });
-
       return pr;
     } catch (error) {
-      this.core.error(`Failed to fetch PR details: ${error.message}`);
+      core.error(`Failed to fetch PR: ${error.message}`);
       return null;
     }
   }
 
   async getDiff() {
     const { data: rawDiff } = await this.octokit.rest.pulls.get({
-      owner: this.owner,
-      repo: this.repo,
+      owner: this.repo.owner,
+      repo: this.repo.repo,
       pull_number: this.pullNumber,
       mediaType: { format: 'diff' },
     });
-
     return rawDiff;
   }
 
   async submitReview(comments) {
-    if (comments.length > 0) {
-      await this.octokit.rest.pulls.createReview({
-        owner: this.owner,
-        repo: this.repo,
-        pull_number: this.pullNumber,
-        event: 'COMMENT',
-        comments,
-        body: 'Here are Code Reviews by _SenpAI_'
-      });
-      core.info(`Submitted ${comments.length} review comments`);
-    } else {
-      await this.octokit.rest.issues.createComment({
-        owner: this.owner,
-        repo: this.repo,
-        issue_number: this.pullNumber,
-        body: '✅ **LGTM!** No issues found by SenpAI\n\n_Code meets quality standards_'
-      });
-      core.info('Posted LGTM comment');
+    try {
+      const validComments = comments.filter((c) =>
+        c.line > 0 && c.path && c.body?.length > 0
+      );
+
+      if (validComments.length > 0) {
+        await this.octokit.rest.pulls.createReview({
+          owner: this.repo.owner,
+          repo: this.repo.repo,
+          pull_number: this.pullNumber,
+          event: 'COMMENT',
+          comments: validComments,
+          body: '🧠 Here are Code Reviews by _SenpAI_:'
+        });
+        core.info(`Submitted ${validComments.length} valid comments`);
+      } else {
+        await this.octokit.rest.issues.createComment({
+          owner: this.repo.owner,
+          repo: this.repo.repo,
+          issue_number: this.pullNumber,
+          body: '✅ **LGTM!** No issues found\n\n_Code meets quality standards_'
+        });
+        core.info('Posted LGTM comment');
+      }
+    } catch (error) {
+      core.error(`Review submission failed: ${error.message}`);
+      throw error;
     }
   }
 }
