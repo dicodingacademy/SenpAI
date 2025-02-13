@@ -89,41 +89,58 @@ class GeminiClient {
       .filter((comment) => comment !== null);
   }
 
-  buildPrompt(fileName, pr, diffContent, languageReview, toneResponse, chunkLines) {
-    return `You are SenpAI, a senior programmer AI. Analyze this code diff and provide feedback in STRICT JSON format:
-            {
-              "comments": [
-                {
-                  "line":  <1-${chunkLines}>,
-                  "comment": "<markdown_formatted_feedback>"
-                }
-              ]
-            }
-            
-            Rules:
-            1. Response with ${languageReview || 'english'} with ${toneResponse} tone. 
-            2. Provide comments and suggestions ONLY if there is something to improve, otherwise "comments" should be an empty array.
-            3. Line numbers MUST be between 1-${chunkLines}
-            4. Focus on:
-               - Security vulnerabilities
-               - Performance optimizations
-               - Code quality issues
-               - Architectural improvements
-            5. Avoid:
-               - Style nitpicks
-               - Comment suggestions
-               - Unsubstantiated claims
-            
-            PR Title: ${pr.title}
-            PR Description: ${pr.body || 'No description provided'}
-            
-            File: ${fileName}
-            Diff:
-            \`\`\`diff
-            ${diffContent}
-            \`\`\`
-            
-            ONLY respond with valid JSON. No extra text.`;
+  buildPrompt(fileName, pr, diffContent, languageReview = 'english', toneResponse = 'professional', chunkLines) {
+    if (!fileName || !diffContent || !chunkLines) {
+      throw new Error('Required parameters missing: fileName, diffContent, and chunkLines are mandatory');
+    }
+
+    if (!Number.isInteger(chunkLines) || chunkLines <= 0) {
+      throw new Error('chunkLines must be a positive integer');
+    }
+
+    const priorityCriteria = [
+      '1. Security risks (immediate danger)',
+      '2. Critical bugs (data loss/corruption)',
+      '3. Performance bottlenecks (>100ms impact)',
+      '4. Maintenance hazards (error handling)',
+      '5. Architectural flaws (scalability)'
+    ].join('\n    ');
+
+    return `You are SenpAI, a senior code reviewer. Provide MAX 3 URGENT comments in STRICT JSON:
+    {
+      "comments": [
+        {
+          "line": <1-${chunkLines}>,
+          "comment": "<markdown>",
+          "severity": "<critical|high|medium>"
+        }
+      ]
+    }
+    
+    RULES:
+    1. Language: ${languageReview}, Tone: ${toneResponse}
+    2. Line numbers REFERENCE NEW CODE ONLY
+    3. Priority order:
+        ${priorityCriteria}
+    4. REQUIRED IMPACT ANALYSIS:
+      - Include concrete performance metrics
+      - Specify security exploit scenarios
+      - Quantify maintenance costs
+    5. AVOID:
+      - Style nitpicks (unless security-related)
+      - Documentation suggestions
+      - Theoretical optimizations
+    
+    CRITICAL CONTEXT:
+    PR Title: ${pr.title || 'Untitled'}
+    ${pr.body ? `PR Desc: ${pr.body}` : ''}
+    
+    CODE DIFF (${fileName}):
+    \`\`\`diff
+    ${diffContent}
+    \`\`\`
+    
+    Respond ONLY with valid JSON.`;
   }
 }
 
