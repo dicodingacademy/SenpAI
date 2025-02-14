@@ -32299,7 +32299,7 @@ class GitHubClient {
           c.body?.length > 0
       );
 
-      core.debug(`Valid comments: ${validComments}`);
+      core.debug(`Valid comments: ${JSON.stringify(validComments)}`);
 
       if (validComments.length > 0) {
         await this.octokit.rest.pulls.createReview({
