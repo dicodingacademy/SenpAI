@@ -9,7 +9,7 @@ function parseGitDiff(diffText) {
       let globalPositionCounter = 0;
 
       file.hunks = file.hunks.map((hunk) => {
-        const hunkStart = globalPositionCounter + 1;
+        const hunkStart = globalPositionCounter + (globalPositionCounter === 0 ? 1 : 2);
         hunk.changes = hunk.changes.map((change) => {
           globalPositionCounter++;
           return {
