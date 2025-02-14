@@ -86,11 +86,6 @@ class GeminiClient {
           return null;
         }
 
-        if (!change.newLineNumber) {
-          core.warning(`Position ${position} refers to deleted code`);
-          return null;
-        }
-
         return {
           path: filePath,
           position: change.globalPosition,
