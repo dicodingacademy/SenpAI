@@ -32299,6 +32299,8 @@ class GitHubClient {
           c.body?.length > 0
       );
 
+      core.debug(`Valid comments: ${validComments}`);
+
       if (validComments.length > 0) {
         await this.octokit.rest.pulls.createReview({
           owner: this.repo.owner,
