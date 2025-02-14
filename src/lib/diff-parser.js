@@ -7,9 +7,16 @@ function parseGitDiff(diffText) {
 
     return parsed.map((file) => {
       let globalPositionCounter = 0;
+      let isFirstHunk = true;
 
       file.hunks = file.hunks.map((hunk) => {
-        const hunkStart = globalPositionCounter + (globalPositionCounter === 0 ? 1 : 2);
+        if (!isFirstHunk) {
+          globalPositionCounter += 1;
+        } else {
+          isFirstHunk = false;
+        }
+
+        const hunkStart = globalPositionCounter + 1;
         hunk.changes = hunk.changes.map((change) => {
           globalPositionCounter++;
           return {
@@ -33,4 +40,5 @@ function parseGitDiff(diffText) {
     return [];
   }
 }
+
 module.exports = { parseGitDiff };
