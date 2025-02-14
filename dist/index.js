@@ -31960,13 +31960,13 @@ function parseComment(aiResponse) {
     return result.comments.filter((comment) => {
       if (!comment || typeof comment !== 'object') return false;
 
-      const hasValidLine = typeof comment.line === 'number' && comment.line > 0;
+      const hasValidPosition = typeof comment.position === 'number' && comment.position > 0;
       const hasValidComment = typeof comment.comment === 'string' && comment.comment.trim().length > 0;
 
-      if (!hasValidLine) core.debug(`Invalid line number in comment: ${comment.line}`);
+      if (!hasValidPosition) core.debug(`Invalid position number in comment: ${comment.position}`);
       if (!hasValidComment) core.debug(`Invalid comment text: ${comment.comment}`);
 
-      return hasValidLine && hasValidComment;
+      return hasValidPosition && hasValidComment;
     });
 
   } catch (error) {
@@ -32016,7 +32016,7 @@ function parseGitDiff(diffText) {
       let globalPositionCounter = 0;
 
       file.hunks = file.hunks.map((hunk) => {
-        const hunkStart = globalPositionCounter + 1;
+        const hunkStart = globalPositionCounter + (globalPositionCounter === 0 ? 1 : 2);
         hunk.changes = hunk.changes.map((change) => {
           globalPositionCounter++;
           return {
@@ -32087,7 +32087,7 @@ class GeminiClient {
 
       try {
         const hunkContent = this.formatDiffForPrompt(hunk.changes);
-        core.debug(`Hunk content: ${hunkContent}`);
+        core.debug(`Hunk content: \n${hunkContent}\n`);
 
         const { toneResponse, languageReview } = getConfig();
         const prompt = this.buildPrompt(
@@ -32100,7 +32100,7 @@ class GeminiClient {
           hunk.globalPositionEnd
         );
 
-        core.debug(`Prompt: ${prompt}`);
+        core.debug(`Prompt: \n${prompt}\n`);
         const aiResponse = await this.model.generateContent(prompt);
         const parsedResponse = parseComment(aiResponse);
 
@@ -32153,11 +32153,11 @@ class GeminiClient {
     return changes
       .map((change) => {
         if (change.type === 'insert') {
-          return `+ ${change.content}`; // New code
+          return `${change.globalPosition}. + ${change.content}`;
         } else if (change.type === 'delete') {
-          return `- ${change.content}`; // Deleted code
+          return `${change.globalPosition}. - ${change.content}`;
         } else {
-          return `  ${change.content}`; // Normal/unchanged code
+          return `${change.globalPosition}.  ${change.content}`;
         }
       })
       .join('\n');
@@ -32174,8 +32174,9 @@ class GeminiClient {
 
     return `You are SenpAI, a senior code reviewer. Your task is reviewing pull requests.
 INSTRUCTION:
-  1. IMPORTANT: Provide comments in STRICT JSON format: {"comments": [{ "position": <${globalPositionStart}-${globalPositionEnd}>, "comment": "<markdown>","severity": "<critical|high|medium|low>" }]}
-  2. IMPORTANT: Provide comments and suggestions ONLY if there is something to improve, otherwise "reviews" should be an empty array.
+  1. [IMPORTANT] Provide comments in STRICT JSON format: {"comments": [{ "position": <${globalPositionStart}-${globalPositionEnd}>, "comment": "<markdown>","severity": "<critical|high|medium|low>" }]}
+  2. [IMPORTANT] Provide comments ONLY for lines of code that contain new additions or have a "+" prefix.
+  3. If there are no improvements needed, the "comments" array should be empty.
   
 RULES:
   1. LANGUAGE: ${languageReview}, TONE: ${toneResponse}
@@ -32198,7 +32199,7 @@ PR Title: ${pr.title || 'Untitled'}
 ${pr.body ? `PR Description: ${pr.body}` : ''}
 
 FILE: ${fileName}
-DIFF HUNK WITH THE FIRST LINE OF HUNK ABOVE IS POSITION ${globalPositionStart}:
+DIFF HUNK:
 \`\`\`diff
 ${diffContent}
 \`\`\`
