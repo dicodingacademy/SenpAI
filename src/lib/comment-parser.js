@@ -29,13 +29,13 @@ function parseComment(aiResponse) {
     return result.comments.filter((comment) => {
       if (!comment || typeof comment !== 'object') return false;
 
-      const hasValidLine = typeof comment.line === 'number' && comment.line > 0;
+      const hasValidPosition = typeof comment.position === 'number' && comment.position > 0;
       const hasValidComment = typeof comment.comment === 'string' && comment.comment.trim().length > 0;
 
-      if (!hasValidLine) core.debug(`Invalid line number in comment: ${comment.line}`);
+      if (!hasValidPosition) core.debug(`Invalid position number in comment: ${comment.position}`);
       if (!hasValidComment) core.debug(`Invalid comment text: ${comment.comment}`);
 
-      return hasValidLine && hasValidComment;
+      return hasValidPosition && hasValidComment;
     });
 
   } catch (error) {
