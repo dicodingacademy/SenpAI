@@ -32008,30 +32008,38 @@ module.exports = { getConfig };
 const { parse } = __nccwpck_require__(5764);
 const core = __nccwpck_require__(9999);
 
-function parseGitDiff(diffText){
+function parseGitDiff(diffText) {
   try {
     const parsed = parse(diffText);
 
-    let globalPosition = 0;
     return parsed.map((file) => {
+      let globalPositionCounter = 0;
+
       file.hunks = file.hunks.map((hunk) => {
+        const hunkStart = globalPositionCounter + 1;
         hunk.changes = hunk.changes.map((change) => {
-          globalPosition++;
+          globalPositionCounter++;
           return {
             ...change,
-            position: globalPosition
+            globalPosition: globalPositionCounter
           };
         });
+        const hunkEnd = globalPositionCounter;
+
+        hunk.globalPositionStart = hunkStart;
+        hunk.globalPositionEnd = hunkEnd;
+
         return hunk;
       });
+
       return file;
     });
+
   } catch (error) {
     core.error(`Failed to parse diff: ${error.message}`);
     return [];
   }
 }
-
 module.exports = { parseGitDiff };
 
 /***/ }),
@@ -32078,17 +32086,21 @@ class GeminiClient {
       await new Promise((resolve) => setTimeout(resolve, DELAY));
 
       try {
-        const diffContent = hunk.changes.map((c) => c.content).join('\n');
+        const hunkContent = this.formatDiffForPrompt(hunk.changes);
+        core.debug(`Hunk content: ${hunkContent}`);
+
         const { toneResponse, languageReview } = getConfig();
         const prompt = this.buildPrompt(
           file.newPath,
           pr,
-          diffContent,
+          hunkContent,
           languageReview,
           toneResponse,
-          hunk.newLines
+          hunk.globalPositionStart,
+          hunk.globalPositionEnd
         );
 
+        core.debug(`Prompt: ${prompt}`);
         const aiResponse = await this.model.generateContent(prompt);
         const parsedResponse = parseComment(aiResponse);
 
@@ -32109,125 +32121,90 @@ class GeminiClient {
   }
 
   createComments(filePath, hunk, aiComments) {
-    const MAX_COMMENTS_PER_HUNK = 3;
-
     return aiComments
-      .filter((comment) => {
-        if (!comment.severity) {
-          core.debug(`Comment missing severity: ${JSON.stringify(comment)}`);
-          return false;
-        }
-
-        const validSeverities = new Set(['critical', 'high', 'medium']);
-        const isSevere = validSeverities.has(comment.severity.toLowerCase());
-
-        if (!isSevere) {
-          core.debug(`Filtered out low-severity comment: ${comment.severity}`);
-        }
-
-        return isSevere;
+      .filter(({ position }) => {
+        const lineNum = Number(position);
+        return !isNaN(lineNum) && lineNum >= 1 && lineNum <= hunk.newLines;
       })
-      .sort((a, b) => {
-        const severityOrder = { critical: 1, high: 2, medium: 3 };
-        return severityOrder[a.severity.toLowerCase()] - severityOrder[b.severity.toLowerCase()];
-      })
-      .slice(0, MAX_COMMENTS_PER_HUNK)
-      .map(({ line, comment }) => {
-        const lineNumber = Number(line);
+      .map(({ position, comment, }) => {
+        const changeIndex = position - 1;
+        const change = hunk.changes[changeIndex];
 
-        if (
-          Number.isNaN(lineNumber) ||
-              lineNumber < 1 ||
-              lineNumber > hunk.newLines
-        ) {
-          core.warning(`Invalid line ${line} in ${filePath}. Valid range 1-${hunk.newLines}`);
+        if (!change || !change.globalPosition) {
+          core.warning(`Invalid position ${position} in hunk (max ${hunk.newLines})`);
           return null;
         }
 
-        const change = hunk.changes.find((c) => c.newLineNumber === (hunk.newStart + lineNumber - 1));
-
-        if (!change) {
-          core.warning(`Could not find position for line ${lineNumber} in ${filePath}`);
+        if (!change.newLineNumber) {
+          core.warning(`Position ${position} refers to deleted code`);
           return null;
         }
 
         return {
           path: filePath,
-          position: change.position,
+          position: change.globalPosition,
           body: comment
         };
       })
       .filter((comment) => comment !== null);
   }
 
-  buildPrompt(fileName, pr, diffContent, languageReview = 'english', toneResponse = 'professional', hunkNewLines) {
-    if (!fileName || !diffContent || !hunkNewLines) {
-      throw new Error('Required parameters missing: fileName, diffContent, and chunkLines are mandatory');
-    }
-
-    if (!Number.isInteger(hunkNewLines) || hunkNewLines <= 0) {
-      throw new Error('chunkLines must be a positive integer');
-    }
-
-    const priorityCriteria = [
-      '1. Security risks (immediate danger)',
-      '2. Critical bugs (data loss/corruption)',
-      '3. Performance bottlenecks (>100ms impact)',
-      '4. Maintenance hazards (error handling)',
-      '5. Architectural flaws (scalability)'
-    ].join('\n    ');
-
-    return `You are SenpAI, a senior code reviewer. Provide MAX 3 URGENT comments in STRICT JSON:
-    {
-      "comments": [
-        {
-          "line": <1-${hunkNewLines}>,
-          "comment": "<markdown>",
-          "severity": "<critical|high|medium|low>"
+  formatDiffForPrompt(changes) {
+    return changes
+      .map((change) => {
+        if (change.type === 'insert') {
+          return `+ ${change.content}`; // New code
+        } else if (change.type === 'delete') {
+          return `- ${change.content}`; // Deleted code
+        } else {
+          return `  ${change.content}`; // Normal/unchanged code
         }
-      ]
+      })
+      .join('\n');
+  }
+
+  buildPrompt(fileName, pr, diffContent, languageReview = 'english', toneResponse = 'professional', globalPositionStart, globalPositionEnd) {
+    if (!fileName || !diffContent) {
+      throw new Error('Required parameters missing: fileName and diffContent are mandatory');
     }
-    
-    RULES:
-    1. LANGUAGE: ${languageReview}, TONE: ${toneResponse}
-    2. RULES FOR LINE NUMBERS:
-        - Line numbers MUST be relative to the hunk start
-        - First line after @@ header is line 1
-        - Maximum line number is ${hunkNewLines}
-        - NEVER use absolute file line numbers
-    3. PRIORITY CRITERIA:
-        ${priorityCriteria}
-    4. REQUIRED IMPACT ANALYSIS:
-      - Include concrete performance metrics
-      - Specify security exploit scenarios
-      - Quantify maintenance costs
-    5. AVOID:
-      - Style nitpicks (unless security-related)
-      - Documentation suggestions
-      - Theoretical optimizations
+
+    if (!Number.isInteger(globalPositionStart) || !Number.isInteger(globalPositionEnd) || globalPositionStart < 1 || globalPositionEnd < globalPositionStart) {
+      throw new Error(`Invalid position range: ${globalPositionStart}-${globalPositionEnd}`);
+    }
+
+    return `You are SenpAI, a senior code reviewer. Your task is reviewing pull requests.
+INSTRUCTION:
+  1. IMPORTANT: Provide comments in STRICT JSON format: {"comments": [{ "position": <${globalPositionStart}-${globalPositionEnd}>, "comment": "<markdown>","severity": "<critical|high|medium|low>" }]}
+  2. IMPORTANT: Provide comments and suggestions ONLY if there is something to improve, otherwise "reviews" should be an empty array.
+  
+RULES:
+  1. LANGUAGE: ${languageReview}, TONE: ${toneResponse}
+  2. PRIORITY CRITERIA:
+    - Security risks (immediate danger)
+    - Critical bugs (data loss/corruption)
+    - Performance bottlenecks (>100ms impact)
+    - Maintenance hazards (error handling)
+    - Architectural flaws (scalability)
+  3. AVOID:
+    - Style nitpicks (unless security-related)
+    - Documentation suggestions
+    - Theoretical optimizations
 
     EXAMPLE:
-    {
-      "comments": [
-        {
-          "line": 2,
-          "comment": "Potential SQL injection vulnerability. Use parameterized queries.",
-          "severity": "critical"
-        }
-      ]
-    }
+    {"comments": [{"position": 2, "comment": "Potential SQL injection vulnerability. Use parameterized queries.","severity": "critical"}]}
     
-    DIFF CONTEXT:
-    PR Title: ${pr.title || 'Untitled'}
-    ${pr.body ? `PR Description: ${pr.body}` : ''}
-    
-    FILE: ${fileName}
-    DIFF HUNK:
-    \`\`\`diff
-    ${diffContent}
-    \`\`\`
-    
-    Respond ONLY with valid JSON.`;
+DIFF CONTEXT:
+PR Title: ${pr.title || 'Untitled'}
+${pr.body ? `PR Description: ${pr.body}` : ''}
+
+FILE: ${fileName}
+DIFF HUNK WITH THE FIRST LINE OF HUNK ABOVE IS POSITION ${globalPositionStart}:
+\`\`\`diff
+${diffContent}
+\`\`\`
+
+
+Respond ONLY with valid JSON.`;
   }
 }
 
